@@ -8,7 +8,10 @@ from database import (
     save_project_draft, 
     get_project_draft, 
     delete_project_draft,
-    check_idempotency_status
+    check_idempotency_status,
+    PRODUCTION_POLICIES,
+    PRODUCTION_POLICY_DESCRIPTIONS,
+    POLICY_DESC_MAP
 )
 from services.deadline import calculate_initial_deadlines
 from services.action_runner import (
@@ -257,6 +260,18 @@ def render_project_create(current_user: dict):
         selling_point = ""
         customer_benefit = ""
 
+    # 制作方針（単一選択・初期未選択・必須）
+    current_policy = st.session_state.get("f_production_policy")
+    default_policy_idx = PRODUCTION_POLICIES.index(current_policy) if current_policy in PRODUCTION_POLICIES else None
+
+    production_policy = st.radio(
+        "制作方針（必須）",
+        options=PRODUCTION_POLICIES,
+        captions=PRODUCTION_POLICY_DESCRIPTIONS,
+        index=default_policy_idx,
+        key="production_policy_radio"
+    )
+
     design_taste = st.text_input("デザインの希望テイスト（任意）", value=st.session_state.get("f_design_taste", ""), placeholder="例: 明るく清潔感のある雰囲気、高級感")
     uploaded_files = st.file_uploader("参考素材・指示書ファイルの添付（任意・複数可）", accept_multiple_files=True)
 
@@ -281,6 +296,9 @@ def render_project_create(current_user: dict):
         if not st.session_state.media_items:
             st.error("制作物を最低1点リストに追加してください。")
             return
+        if not production_policy:
+            st.error("制作方針を選択してください（必須）。")
+            return
 
         # 添付ファイルの展開
         att_payload = []
@@ -303,6 +321,7 @@ def render_project_create(current_user: dict):
                 "content_text": content_text,
                 "required_elements": required_elements,
                 "purpose_problem": purpose_problem,
+                "production_policy": production_policy,
                 "design_taste": design_taste,
                 "desired_first_draft": str(desired_first_draft),
                 "target_launch": str(target_launch),
@@ -380,14 +399,16 @@ def execute_create_project_pending(current_user, payload, form_type):
                     first_reply_deadline, first_draft_deadline,
                     form_type, request_date, requester_person_name, desired_first_draft_date,
                     target_launch_date, item_name, product_description, selling_point, customer_benefit,
-                    content_text, purpose_and_problem, design_taste, idempotency_key
+                    content_text, purpose_and_problem, design_taste, idempotency_key,
+                    production_policy
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s,
                     %s, 'waiting_acceptance', 'admin', %s,
                     %s, %s,
                     %s, CURRENT_DATE, %s, %s,
                     %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s
+                    %s, %s, %s, %s,
+                    %s
                 ) RETURNING id;
             """, (
                 payload["item_name"], payload["purpose_problem"] or payload["item_name"], payload["selling_point"] or "特になし", payload["required_elements"] or "特になし",
@@ -395,7 +416,8 @@ def execute_create_project_pending(current_user, payload, form_type):
                 deadlines['first_reply_deadline'], deadlines['first_draft_deadline'],
                 form_type, payload["requester_name"], payload["desired_first_draft"], payload["target_launch"],
                 payload["item_name"], payload["product_desc"], payload["selling_point"], payload["customer_benefit"],
-                payload["content_text"], payload["purpose_problem"], payload["design_taste"], idempotency_key
+                payload["content_text"], payload["purpose_problem"], payload["design_taste"], idempotency_key,
+                payload.get("production_policy")
             ))
             new_project_id = cur.fetchone()[0]
 
@@ -424,6 +446,10 @@ def execute_create_project_pending(current_user, payload, form_type):
         delete_project_draft(current_user["id"], form_type)
         st.session_state.project_idempotency_key = str(uuid.uuid4())
         st.session_state.media_items = []
+        if "f_production_policy" in st.session_state:
+            del st.session_state["f_production_policy"]
+        if "production_policy_radio" in st.session_state:
+            del st.session_state["production_policy_radio"]
         clear_pending_action()
         set_flash_message("success", "制作依頼が正常に送信されました！")
         st.session_state.current_project_id = new_project_id
@@ -446,7 +472,8 @@ def save_current_draft(user_id: int, form_type: str):
         "f_content_text": st.session_state.get("f_content_text", ""),
         "f_required_elements": st.session_state.get("f_required_elements", ""),
         "f_purpose_problem": st.session_state.get("f_purpose_problem", ""),
-        "f_design_taste": st.session_state.get("f_design_taste", "")
+        "f_design_taste": st.session_state.get("f_design_taste", ""),
+        "f_production_policy": st.session_state.get("production_policy_radio") or st.session_state.get("f_production_policy")
     }
     save_project_draft(user_id, form_type, draft_data)
 
@@ -454,5 +481,11 @@ def apply_draft_to_session(draft: dict):
     if "media_items" in draft:
         st.session_state.media_items = draft["media_items"]
     for k, v in draft.items():
+        if k != "media_items":
+            st.session_state[k] = v
+    if "f_production_policy" in draft:
+        st.session_state["f_production_policy"] = draft["f_production_policy"]
+        if "production_policy_radio" in st.session_state:
+            del st.session_state["production_policy_radio"]
         if k != "media_items":
             st.session_state[k] = v

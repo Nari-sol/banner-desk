@@ -6,7 +6,8 @@ from database import (
     can_access_project, 
     get_signed_file_url, 
     upload_attachment_file,
-    check_idempotency_status
+    check_idempotency_status,
+    POLICY_DESC_MAP
 )
 from utils import format_datetime_jst
 from services.action_runner import (
@@ -177,6 +178,17 @@ def render_project_detail(current_user: dict, project_id: int):
             st.markdown(f"**掲載原稿・文言**:\n```\n{p['content_text']}\n```")
         if p["required_elements"]:
             st.markdown(f"**必須掲載要素**: {p['required_elements']}")
+
+        policy = p.get("production_policy")
+        if policy:
+            desc = POLICY_DESC_MAP.get(policy, "")
+            if desc:
+                st.markdown(f"**制作方針**: :blue-background[**{policy}**]  \n<span style='color: gray; font-size: 13px;'>└ {desc}</span>", unsafe_allow_html=True)
+            else:
+                st.markdown(f"**制作方針**: :blue-background[**{policy}**]")
+        else:
+            st.markdown("**制作方針**: 未設定")
+
         if p["design_taste"]:
             st.markdown(f"**希望テイスト**: {p['design_taste']}")
 
