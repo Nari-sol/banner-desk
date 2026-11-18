@@ -58,6 +58,13 @@ ALTER TABLE projects ADD COLUMN IF NOT EXISTS target_audience TEXT;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS target_environment TEXT;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS selling_point TEXT;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS customer_benefit TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMP WITH TIME ZONE;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS cancelled_by INTEGER REFERENCES users(id);
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS cancel_reason TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS cancel_idempotency_key VARCHAR(100);
+
+-- schedule_proposals に対する非破壊列追加
+ALTER TABLE schedule_proposals ADD COLUMN IF NOT EXISTS review_idempotency_key VARCHAR(100);
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS content_text TEXT;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS production_policy TEXT;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS purpose_and_problem TEXT;
