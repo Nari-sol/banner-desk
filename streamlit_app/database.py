@@ -311,3 +311,21 @@ def delete_project_draft(user_id: int, form_type: str):
             cur.execute("DELETE FROM project_drafts WHERE user_id = %s AND form_type = %s", (user_id, form_type))
     except Exception:
         pass
+
+# ========================================================
+# 制作方針（依頼時の基本方針）の定義
+# ========================================================
+PRODUCTION_POLICIES = [
+    "原稿・素材を厳守",
+    "提案を確認してから変更",
+    "目的・必須要素を守ったアレンジ可"
+]
+
+PRODUCTION_POLICY_DESCRIPTIONS = [
+    "指定した原稿・素材に沿って制作する。変更が必要な場合は事前に相談する。",
+    "原稿・素材の変更やアレンジは、デザイナーの提案を依頼者が確認・承認してから行う。",
+    "依頼の目的と必須掲載要素を守る範囲で、デザイナーによるアレンジを認める。"
+]
+
+POLICY_DESC_MAP = dict(zip(PRODUCTION_POLICIES, PRODUCTION_POLICY_DESCRIPTIONS))
+
