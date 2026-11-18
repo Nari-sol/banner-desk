@@ -61,15 +61,22 @@ def get_db_cursor(commit=False):
     """
     pool = get_db_pool()
     conn = pool.getconn()
+    committed = False
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
             yield cur
         if commit:
             conn.commit()
+            committed = True
     except Exception:
         conn.rollback()
         raise
     finally:
+        if commit and not committed:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         pool.putconn(conn)
 
 def get_supabase_client() -> Client:
@@ -101,8 +108,10 @@ def check_idempotency_status(table_name: str, idempotency_key: str) -> dict:
 
     allowed_tables = {
         "projects": "SELECT id, title, status FROM projects WHERE idempotency_key = %s",
+        "projects_cancel": "SELECT id, title, status FROM projects WHERE cancel_idempotency_key = %s",
         "project_posts": "SELECT id, content FROM project_posts WHERE idempotency_key = %s",
         "schedule_proposals": "SELECT id, status FROM schedule_proposals WHERE idempotency_key = %s",
+        "schedule_review": "SELECT id, status FROM schedule_proposals WHERE review_idempotency_key = %s",
         "project_versions": "SELECT id, version_number, version_label FROM project_versions WHERE idempotency_key = %s",
         "project_evaluations": "SELECT id, quality_score FROM project_evaluations WHERE idempotency_key = %s"
     }
