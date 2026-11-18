@@ -1,4 +1,6 @@
+import json
 import streamlit as st
+import streamlit.components.v1 as components
 from database import get_db_cursor
 from utils import format_datetime_jst
 from services.action_runner import is_busy
@@ -7,7 +9,12 @@ from services.action_runner import is_busy
 def render_notification_bell(user_id: int):
     """
     ベル通知コンポーネント (st.fragmentにより10秒ごとに自動更新)
+    未読通知を取得し、新着通知があればデスクトップ通知 (Web Notification API) を自動発行する。
     """
+    # デスクトップ通知済みIDのセッション管理
+    if "notified_notification_ids" not in st.session_state:
+        st.session_state.notified_notification_ids = None
+
     unreads = []
     unread_count = 0
     try:
@@ -16,13 +23,55 @@ def render_notification_bell(user_id: int):
                 SELECT id, title, message, link_url, created_at
                 FROM notifications
                 WHERE user_id = %s AND is_read = FALSE
-                ORDER BY id DESC LIMIT 10
+                ORDER BY id DESC LIMIT 20
             """, (user_id,))
             unreads = cur.fetchall()
             unread_count = len(unreads)
     except Exception:
         unread_count = 0
         unreads = []
+
+    # 新着デスクトップ通知の判定
+    current_unread_ids = {n["id"] for n in unreads}
+    new_notifications_to_show = []
+
+    if st.session_state.notified_notification_ids is None:
+        # 初回ロード時: 現在の未読を「既知」として記録（古い通知が一斉に鳴らないようにする）
+        st.session_state.notified_notification_ids = set(current_unread_ids)
+    else:
+        # 10秒ごとの自動更新時: 未通知の新着があれば抽出
+        for n in unreads:
+            if n["id"] not in st.session_state.notified_notification_ids:
+                new_notifications_to_show.append(n)
+                st.session_state.notified_notification_ids.add(n["id"])
+
+    # 新着通知がある場合、デスクトップ通知を発行する JavaScript を iframe で実行
+    if new_notifications_to_show:
+        notif_scripts = []
+        for n in new_notifications_to_show:
+            safe_title = json.dumps(f"【バナー制作デスク】{n['title']}")
+            safe_msg = json.dumps(n['message'])
+            notif_scripts.append(f"""
+            try {{
+                if ("Notification" in window && Notification.permission === "granted") {{
+                    new Notification({safe_title}, {{
+                        body: {safe_msg},
+                        icon: "https://cdn-icons-png.flaticon.com/512/1827/1827349.png"
+                    }});
+                }}
+            }} catch(e) {{
+                console.error("Desktop Notification error:", e);
+            }}
+            """)
+
+        js_code = f"""
+        <script>
+        (function() {{
+            {''.join(notif_scripts)}
+        }})();
+        </script>
+        """
+        components.html(js_code, height=0, width=0)
 
     badge = f"🔔 ({unread_count})" if unread_count > 0 else "🔔 (0)"
     
