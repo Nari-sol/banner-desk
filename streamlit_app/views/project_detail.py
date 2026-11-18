@@ -184,9 +184,9 @@ def render_project_detail(current_user: dict, project_id: int):
         st.markdown("#### 📎 依頼添付ファイル")
         if attachments:
             for att in attachments:
-                signed_url = get_signed_file_url(current_user, p["id"], att["storage_path"], expires_in=300)
+                signed_url = get_signed_file_url(current_user, p["id"], att["storage_path"], download_filename=att["original_name"], expires_in=300)
                 if signed_url:
-                    st.markdown(f"・[{att['original_name']}]({signed_url}) （有効期限5分・所属確認済み）")
+                    st.markdown(f"・[{att['original_name']}]({signed_url}) （ダウンロード / 所属確認済み）")
                 else:
                     st.markdown(f"・{att['original_name']} (アクセス拒否)")
         else:
@@ -369,9 +369,9 @@ def render_project_detail(current_user: dict, project_id: int):
                         st.info(f"現在、**第{latest_v['version_number']}版（{latest_v['version_label']}）** が提出されています。")
                         if latest_v["comment"]:
                             st.caption(f"デザイナーからのコメント: {latest_v['comment']}")
-                        signed_v_url = get_signed_file_url(current_user, p["id"], latest_v["file_path"], expires_in=300)
+                        signed_v_url = get_signed_file_url(current_user, p["id"], latest_v["file_path"], download_filename=latest_v["original_name"], expires_in=300)
                         if signed_v_url:
-                            st.markdown(f"[📥 提出ファイルをダウンロード / 確認]({signed_v_url})")
+                            st.markdown(f"[📥 提出ファイルをダウンロード / 確認（{latest_v['original_name']}）]({signed_v_url})")
 
                     st.write("内容をご確認の上、「この内容で承認する（校了）」または「修正を依頼する」を選択してください。")
                     col_c1, col_c2 = st.columns(2)
@@ -450,10 +450,15 @@ def render_project_detail(current_user: dict, project_id: int):
                         st.caption(f"承認コメント: {v['approval_comment']}")
                 if v["comment"]:
                     st.caption(f"提出コメント: {v['comment']}")
-                signed_v_url = get_signed_file_url(current_user, p["id"], v["file_path"], expires_in=300)
-                if signed_v_url:
-                    st.image(signed_v_url, width=300)
-                    st.markdown(f"[📥 ファイルをダウンロード]({signed_v_url})")
+                # プレビュー表示用（インラインURL: download_filename=False）
+                preview_v_url = get_signed_file_url(current_user, p["id"], v["file_path"], download_filename=False, expires_in=300)
+                # ダウンロード用（ダウンロードヘッダー付きURL: download_filename=v["original_name"]）
+                download_v_url = get_signed_file_url(current_user, p["id"], v["file_path"], download_filename=v["original_name"], expires_in=300)
+                
+                if preview_v_url and v.get("file_path", "").lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".jfif")):
+                    st.image(preview_v_url, width=300)
+                if download_v_url:
+                    st.markdown(f"[📥 ファイルをダウンロード（{v['original_name']}）]({download_v_url})")
                 st.divider()
         else:
             st.caption("提出された制作物はまだありません。")
