@@ -166,30 +166,33 @@ def can_access_project(user: dict, project_id: int, cur=None) -> bool:
     except Exception:
         return False
 
-def verify_file_belongs_to_project(project_id: int, storage_path: str, cur=None) -> bool:
+def get_project_file_info(project_id: int, storage_path: str, cur=None) -> dict:
     """
-    指定された storage_path が、本当に該当案件（project_id）の
-    project_attachments / project_versions / post_attachments に登録されているか確認
+    指定された storage_path が該当案件に属するか確認し、メタ情報（original_name等）を取得。
+    属していない場合は None を返す。
     """
     try:
         def _check(c):
             # 1. project_attachments
-            c.execute("SELECT 1 FROM project_attachments WHERE project_id = %s AND storage_path = %s", (project_id, storage_path))
-            if c.fetchone():
-                return True
+            c.execute("SELECT id, original_name FROM project_attachments WHERE project_id = %s AND storage_path = %s", (project_id, storage_path))
+            row = c.fetchone()
+            if row:
+                return {"table": "project_attachments", "id": row[0], "original_name": row[1]}
             # 2. project_versions
-            c.execute("SELECT 1 FROM project_versions WHERE project_id = %s AND file_path = %s", (project_id, storage_path))
-            if c.fetchone():
-                return True
+            c.execute("SELECT id, original_name FROM project_versions WHERE project_id = %s AND file_path = %s", (project_id, storage_path))
+            row = c.fetchone()
+            if row:
+                return {"table": "project_versions", "id": row[0], "original_name": row[1]}
             # 3. post_attachments (project_posts経由)
             c.execute("""
-                SELECT 1 FROM post_attachments pa
+                SELECT pa.id, pa.original_name FROM post_attachments pa
                 JOIN project_posts pp ON pa.post_id = pp.id
                 WHERE pp.project_id = %s AND pa.storage_path = %s
             """, (project_id, storage_path))
-            if c.fetchone():
-                return True
-            return False
+            row = c.fetchone()
+            if row:
+                return {"table": "post_attachments", "id": row[0], "original_name": row[1]}
+            return None
 
         if cur is not None:
             return _check(cur)
@@ -197,23 +200,48 @@ def verify_file_belongs_to_project(project_id: int, storage_path: str, cur=None)
             with get_db_cursor(commit=False) as cursor:
                 return _check(cursor)
     except Exception:
-        return False
+        return None
 
-def get_signed_file_url(user: dict, project_id: int, storage_path: str, expires_in: int = 300, cur=None) -> str:
+def verify_file_belongs_to_project(project_id: int, storage_path: str, cur=None) -> bool:
+    """
+    指定された storage_path が、本当に該当案件（project_id）の
+    project_attachments / project_versions / post_attachments に登録されているか確認
+    """
+    return get_project_file_info(project_id, storage_path, cur=cur) is not None
+
+def get_signed_file_url(user: dict, project_id: int, storage_path: str, download_filename=None, expires_in: int = 300, cur=None) -> str:
     """
     案件閲覧権限に加え、指定ファイルが実際にその案件に属することをDB記録で確認してから署名URLを発行。
+    ・download_filename: ダウンロード時に適用するファイル名（日本語・空白・記号対応）。
+      - 明示的に文字列が渡された場合はその名前を使用。
+      - None の場合は DB（project_attachments / project_versions / post_attachments）に記録された original_name を自動取得して使用。
+      - False が渡された場合はインラインプレビュー用（options なし）として発行。
     """
     if not can_access_project(user, project_id, cur=cur):
         st.error("この案件へのアクセス権限がありません。")
         return None
 
-    if not verify_file_belongs_to_project(project_id, storage_path, cur=cur):
+    file_info = get_project_file_info(project_id, storage_path, cur=cur)
+    if not file_info:
         st.error("指定されたファイルはこの案件に登録されていません。アクセスを拒否しました。")
         return None
 
+    # ダウンロードファイル名の決定
+    target_filename = None
+    if download_filename is False:
+        target_filename = None  # インラインプレビュー用（optionsなし）
+    elif isinstance(download_filename, str) and download_filename.strip():
+        target_filename = download_filename.strip()
+    elif download_filename is None:
+        # DBに記録されている original_name を利用（記録がない場合は推測せず None のまま）
+        orig = file_info.get("original_name")
+        if orig and isinstance(orig, str) and orig.strip():
+            target_filename = orig.strip()
+
     try:
         supabase = get_supabase_client()
-        res = supabase.storage.from_("attachments").create_signed_url(storage_path, expires_in)
+        options = {"download": target_filename} if target_filename else None
+        res = supabase.storage.from_("attachments").create_signed_url(storage_path, expires_in, options=options)
         if isinstance(res, dict) and "signedURL" in res:
             return res["signedURL"]
         elif hasattr(res, "signed_url"):
