@@ -209,7 +209,7 @@ def verify_file_belongs_to_project(project_id: int, storage_path: str, cur=None)
     """
     return get_project_file_info(project_id, storage_path, cur=cur) is not None
 
-def get_signed_file_url(user: dict, project_id: int, storage_path: str, download_filename=None, expires_in: int = 300, cur=None) -> str:
+def get_signed_file_url(user: dict, project_id: int, storage_path: str, download_filename=None, expires_in: int = 3600, cur=None) -> str:
     """
     案件閲覧権限に加え、指定ファイルが実際にその案件に属することをDB記録で確認してから署名URLを発行。
     ・download_filename: ダウンロード時に適用するファイル名（日本語・空白・記号対応）。
