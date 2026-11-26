@@ -64,6 +64,51 @@ EVALUATION_CRITERIA_OPTIONS = {
     }
 }
 
+def render_download_link(
+    current_user: dict,
+    project_id: int,
+    storage_path: str,
+    original_name: str,
+    key: str,
+    prefix: str = "・",
+    help_text: str = None
+):
+    """
+    ファイルのダウンロードリンクと、オンデマンド再発行ボタンを提供。
+    ・期限切れURLをDBやキャッシュ、session_stateに永続化・再利用しない。
+    ・初回描画時に1時間（3600秒）有効な最新署名URLを動的に発行。
+    ・画面を長時間開いて期限切れになった場合でも、「🔄 再発行」を押すことで
+      権限確認と案件所属確認を行った上で新しいURLをオンデマンド再発行。
+    ・元のファイル名（日本語・空白・記号対応）を維持。
+    """
+    reissue_flag_key = f"reissued_flag_{key}"
+    was_reissued = st.session_state.pop(reissue_flag_key, False)
+
+    # 常に現在時刻で最新の署名URLを発行（有効期限: 3600秒 = 1時間）
+    signed_url = get_signed_file_url(
+        current_user,
+        project_id,
+        storage_path,
+        download_filename=original_name,
+        expires_in=3600
+    )
+
+    if not signed_url:
+        st.markdown(f"{prefix} {original_name} (アクセス権限なし)")
+        return
+
+    c_link, c_btn = st.columns([78, 22])
+    with c_link:
+        st.markdown(f"{prefix} [{original_name}]({signed_url})")
+    with c_btn:
+        if st.button("🔄 再発行", key=f"btn_reissue_{key}", help="長時間開いたままにして期限切れエラーが出た場合に、新しいダウンロードURLを発行します"):
+            st.session_state[reissue_flag_key] = True
+            st.rerun()
+
+    if was_reissued:
+        st.success(f"✅ 「{original_name}」の最新ダウンロードURLを発行しました（有効期限: 1時間）")
+        st.markdown(f"👉 **[{original_name} をダウンロード]({signed_url})**")
+
 def render_project_detail(current_user: dict, project_id: int):
     if not can_access_project(current_user, project_id):
         st.error("この案件の閲覧権限がありません。")
@@ -218,12 +263,14 @@ def render_project_detail(current_user: dict, project_id: int):
         st.divider()
         st.markdown("#### 📎 依頼添付ファイル")
         if attachments:
-            for att in attachments:
-                signed_url = get_signed_file_url(current_user, p["id"], att["storage_path"], download_filename=att["original_name"], expires_in=300)
-                if signed_url:
-                    st.markdown(f"・[{att['original_name']}]({signed_url}) （ダウンロード / 所属確認済み）")
-                else:
-                    st.markdown(f"・{att['original_name']} (アクセス拒否)")
+            for idx, att in enumerate(attachments):
+                render_download_link(
+                    current_user=current_user,
+                    project_id=p["id"],
+                    storage_path=att["storage_path"],
+                    original_name=att["original_name"],
+                    key=f"brief_{att['id']}_{idx}"
+                )
         else:
             st.caption("添付ファイルはありません。")
 
@@ -404,9 +451,14 @@ def render_project_detail(current_user: dict, project_id: int):
                         st.info(f"現在、**第{latest_v['version_number']}版（{latest_v['version_label']}）** が提出されています。")
                         if latest_v["comment"]:
                             st.caption(f"デザイナーからのコメント: {latest_v['comment']}")
-                        signed_v_url = get_signed_file_url(current_user, p["id"], latest_v["file_path"], download_filename=latest_v["original_name"], expires_in=300)
-                        if signed_v_url:
-                            st.markdown(f"[📥 提出ファイルをダウンロード / 確認（{latest_v['original_name']}）]({signed_v_url})")
+                        render_download_link(
+                            current_user=current_user,
+                            project_id=p["id"],
+                            storage_path=latest_v["file_path"],
+                            original_name=latest_v["original_name"],
+                            key=f"latest_v_{latest_v['id']}",
+                            prefix="📥 提出ファイル:"
+                        )
 
                     st.write("内容をご確認の上、「この内容で承認する（校了）」または「修正を依頼する」を選択してください。")
                     col_c1, col_c2 = st.columns(2)
@@ -455,18 +507,19 @@ def render_project_detail(current_user: dict, project_id: int):
                     atts = post_attachments_map.get(post["id"], [])
                     if atts:
                         st.markdown("📎 **共有された参考資料・素材:**")
-                        for att in atts:
-                            download_url = get_signed_file_url(current_user, p["id"], att["storage_path"], download_filename=att["original_name"], expires_in=300)
-                            preview_url = get_signed_file_url(current_user, p["id"], att["storage_path"], download_filename=False, expires_in=300)
-
+                        for idx, att in enumerate(atts):
+                            preview_url = get_signed_file_url(current_user, p["id"], att["storage_path"], download_filename=False, expires_in=3600)
                             ext = os.path.splitext(att["original_name"])[1].lower()
                             if preview_url and ext in [".png", ".jpg", ".jpeg", ".gif", ".webp", ".jfif"]:
                                 st.image(preview_url, caption=att["original_name"], width=260)
 
-                            if download_url:
-                                st.markdown(f"・[{att['original_name']}]({download_url}) （ダウンロード）")
-                            else:
-                                st.markdown(f"・{att['original_name']} (アクセス不可)")
+                            render_download_link(
+                                current_user=current_user,
+                                project_id=p["id"],
+                                storage_path=att["storage_path"],
+                                original_name=att["original_name"],
+                                key=f"post_att_{post['id']}_{att['id']}_{idx}"
+                            )
         else:
             st.caption("タイムラインの投稿はまだありません。")
 
@@ -519,15 +572,20 @@ def render_project_detail(current_user: dict, project_id: int):
                         st.caption(f"承認コメント: {v['approval_comment']}")
                 if v["comment"]:
                     st.caption(f"提出コメント: {v['comment']}")
-                # プレビュー表示用（インラインURL: download_filename=False）
-                preview_v_url = get_signed_file_url(current_user, p["id"], v["file_path"], download_filename=False, expires_in=300)
-                # ダウンロード用（ダウンロードヘッダー付きURL: download_filename=v["original_name"]）
-                download_v_url = get_signed_file_url(current_user, p["id"], v["file_path"], download_filename=v["original_name"], expires_in=300)
-                
+                # プレビュー表示用（インラインURL: download_filename=False, expires_in=3600）
+                preview_v_url = get_signed_file_url(current_user, p["id"], v["file_path"], download_filename=False, expires_in=3600)
                 if preview_v_url and v.get("file_path", "").lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".jfif")):
                     st.image(preview_v_url, width=300)
-                if download_v_url:
-                    st.markdown(f"[📥 ファイルをダウンロード（{v['original_name']}）]({download_v_url})")
+
+                # ダウンロード用（オンデマンド再発行付き）
+                render_download_link(
+                    current_user=current_user,
+                    project_id=p["id"],
+                    storage_path=v["file_path"],
+                    original_name=v["original_name"],
+                    key=f"version_{v['id']}_{v['version_number']}",
+                    prefix="📥"
+                )
                 st.divider()
         else:
             st.caption("提出された制作物はまだありません。")
