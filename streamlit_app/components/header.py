@@ -16,20 +16,32 @@ def render_notification_bell(user_id: int):
         st.session_state.notified_notification_ids = None
 
     unreads = []
+    reads = []
     unread_count = 0
     try:
         with get_db_cursor(commit=False) as cur:
+            # 未読通知（最大20件）
             cur.execute("""
-                SELECT id, title, message, link_url, created_at
+                SELECT id, project_id, title, message, link_url, created_at, is_read
                 FROM notifications
                 WHERE user_id = %s AND is_read = FALSE
                 ORDER BY id DESC LIMIT 20
             """, (user_id,))
             unreads = cur.fetchall()
             unread_count = len(unreads)
+
+            # 既読通知（直近10件）
+            cur.execute("""
+                SELECT id, project_id, title, message, link_url, created_at, is_read
+                FROM notifications
+                WHERE user_id = %s AND is_read = TRUE
+                ORDER BY id DESC LIMIT 10
+            """, (user_id,))
+            reads = cur.fetchall()
     except Exception:
         unread_count = 0
         unreads = []
+        reads = []
 
     # 新着デスクトップ通知の判定
     current_unread_ids = {n["id"] for n in unreads}
@@ -76,23 +88,72 @@ def render_notification_bell(user_id: int):
     badge = f"🔔 ({unread_count})" if unread_count > 0 else "🔔 (0)"
     
     with st.popover(badge, use_container_width=False):
-        st.markdown(f"**未読通知 ({unread_count}件)**")
+        st.markdown("**🔔 お知らせ・通知**")
+        st.caption("通知から内容を確認すると既読になります")
+        
+        col_hdr1, col_hdr2 = st.columns([6, 4])
+        with col_hdr1:
+            st.markdown(f"**未読通知 ({unread_count}件)**")
+        with col_hdr2:
+            if unread_count > 0:
+                if st.button("すべて既読にする", key=f"mark_all_read_{user_id}", type="secondary", use_container_width=True, disabled=is_busy()):
+                    try:
+                        with get_db_cursor(commit=True) as cur:
+                            cur.execute("UPDATE notifications SET is_read = TRUE WHERE user_id = %s AND is_read = FALSE", (user_id,))
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"一括既読エラー: {e}")
+
         if unread_count == 0:
-            st.caption("新しい通知はありません")
+            st.info("未読の通知はありません")
         else:
             for n in unreads:
-                st.markdown(f"**{n['title']}**")
-                created_str = format_datetime_jst(n['created_at'], '%m/%d %H:%M')
-                st.caption(f"{n['message']} ({created_str})")
-                st.divider()
-            
-            if st.button("すべて既読にする", key=f"mark_all_read_{user_id}", disabled=is_busy()):
-                try:
-                    with get_db_cursor(commit=True) as cur:
-                        cur.execute("UPDATE notifications SET is_read = TRUE WHERE user_id = %s", (user_id,))
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"既読更新エラー: {e}")
+                with st.container(border=True):
+                    st.markdown(f"🔵 **{n['title']}**")
+                    created_str = format_datetime_jst(n['created_at'], '%m/%d %H:%M')
+                    st.caption(f"{n['message']} ({created_str})")
+                    
+                    btn_c1, btn_c2 = st.columns(2)
+                    with btn_c1:
+                        if st.button("確認する", key=f"view_notif_{n['id']}", type="primary", use_container_width=True, disabled=is_busy()):
+                            try:
+                                # 対象通知のみを既読化（バックエンドでも自ユーザー限定）
+                                with get_db_cursor(commit=True) as cur:
+                                    cur.execute("UPDATE notifications SET is_read = TRUE WHERE id = %s AND user_id = %s", (n["id"], user_id))
+                                if n.get("project_id"):
+                                    st.session_state.current_project_id = n["project_id"]
+                                    st.session_state.page = "project_detail"
+                                    st.session_state.active_notification_info = {
+                                        "id": n["id"],
+                                        "title": n["title"],
+                                        "message": n["message"]
+                                    }
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"通知確認エラー: {e}")
+                    with btn_c2:
+                        if st.button("既読にする", key=f"mark_one_read_{n['id']}", type="secondary", use_container_width=True, disabled=is_busy()):
+                            try:
+                                with get_db_cursor(commit=True) as cur:
+                                    cur.execute("UPDATE notifications SET is_read = TRUE WHERE id = %s AND user_id = %s", (n["id"], user_id))
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"既読更新エラー: {e}")
+
+        # 既読通知の表示（直近10件）
+        if reads:
+            st.divider()
+            with st.expander(f"既読の通知 ({len(reads)}件)", expanded=False):
+                for n in reads:
+                    st.markdown(f"⚪ <span style='color: gray;'>**{n['title']}**</span>", unsafe_allow_html=True)
+                    created_str = format_datetime_jst(n['created_at'], '%m/%d %H:%M')
+                    st.caption(f"{n['message']} ({created_str})")
+                    if n.get("project_id"):
+                        if st.button("案件を開く", key=f"view_read_notif_{n['id']}", use_container_width=True, disabled=is_busy()):
+                            st.session_state.current_project_id = n["project_id"]
+                            st.session_state.page = "project_detail"
+                            st.rerun()
+                    st.divider()
 
 def render_header(current_user: dict):
     col1, col2, col3, col4 = st.columns([5, 2, 3, 2])
