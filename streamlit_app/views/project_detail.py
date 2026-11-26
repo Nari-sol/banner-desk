@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import uuid
 from datetime import date, timedelta
@@ -116,6 +117,18 @@ def render_project_detail(current_user: dict, project_id: int):
             """, (project_id,))
             posts = cur.fetchall()
 
+            cur.execute("""
+                SELECT pa.*, pp.project_id
+                FROM post_attachments pa
+                JOIN project_posts pp ON pa.post_id = pp.id
+                WHERE pp.project_id = %s
+                ORDER BY pa.id ASC
+            """, (project_id,))
+            all_post_attachments = cur.fetchall()
+            post_attachments_map = {}
+            for pa in all_post_attachments:
+                post_attachments_map.setdefault(pa["post_id"], []).append(pa)
+
             cur.execute("SELECT * FROM project_evaluations WHERE project_id = %s", (project_id,))
             evaluation = cur.fetchone()
 
@@ -143,6 +156,16 @@ def render_project_detail(current_user: dict, project_id: int):
             st.markdown(f"・**取り消し日時**: {format_datetime_jst(p['cancelled_at']) if p.get('cancelled_at') else '日時記録なし'}")
             st.markdown(f"・**取り消し理由**: **{p.get('cancel_reason') or '未記載'}**")
             st.caption("※ 取り消された案件は制作進行・連絡操作（日程・提出・承認・納品・評価・コメント）を停止しています。")
+
+    if "active_notification_info" in st.session_state and st.session_state.active_notification_info:
+        notif_info = st.session_state.active_notification_info
+        c_notif, c_close = st.columns([9, 1])
+        with c_notif:
+            st.info(f"🔔 **通知の確認**: 「{notif_info['title']}」 {notif_info['message']}")
+        with c_close:
+            if st.button("✕", key="close_active_notif", help="案内を閉じる"):
+                st.session_state.active_notification_info = None
+                st.rerun()
 
     tab1, tab2, tab3, tab4 = st.tabs(["📄 依頼内容・制作物", "⚡ アクション・日程", "💬 連絡タイムライン", "⭐ 納品物・評価"])
 
@@ -425,7 +448,25 @@ def render_project_detail(current_user: dict, project_id: int):
                 with st.chat_message(name="assistant" if "岡本" in post["author_name"] else "user"):
                     act_badge = f" `[{post['action_label']}]`" if post.get("action_label") else ""
                     st.markdown(f"**{post['author_name']}**{act_badge} ({format_datetime_jst(post['created_at'], '%m/%d %H:%M')})")
-                    st.markdown(post["content"])
+                    if post["content"]:
+                        st.markdown(post["content"])
+
+                    # 添付ファイルの表示（画像プレビュー & ダウンロードリンク）
+                    atts = post_attachments_map.get(post["id"], [])
+                    if atts:
+                        st.markdown("📎 **共有された参考資料・素材:**")
+                        for att in atts:
+                            download_url = get_signed_file_url(current_user, p["id"], att["storage_path"], download_filename=att["original_name"], expires_in=300)
+                            preview_url = get_signed_file_url(current_user, p["id"], att["storage_path"], download_filename=False, expires_in=300)
+
+                            ext = os.path.splitext(att["original_name"])[1].lower()
+                            if preview_url and ext in [".png", ".jpg", ".jpeg", ".gif", ".webp", ".jfif"]:
+                                st.image(preview_url, caption=att["original_name"], width=260)
+
+                            if download_url:
+                                st.markdown(f"・[{att['original_name']}]({download_url}) （ダウンロード）")
+                            else:
+                                st.markdown(f"・{att['original_name']} (アクセス不可)")
         else:
             st.caption("タイムラインの投稿はまだありません。")
 
@@ -437,17 +478,33 @@ def render_project_detail(current_user: dict, project_id: int):
                 st.session_state.post_idempotency_key = str(uuid.uuid4())
 
             with st.form("new_post_form", clear_on_submit=True):
-                post_content = st.text_area("新しいコメント・質問を入力", placeholder="案件に関する連絡事項をご記入ください。")
-                submit_post = st.form_submit_button("コメントを送信", type="primary", disabled=is_busy())
+                post_content = st.text_area("新しいコメント・質問・連絡を入力", placeholder="案件に関する連絡事項をご記入ください（参考ファイルのみの送信も可能です）。")
+                uploaded_files = st.file_uploader(
+                    "参考資料・追加素材ファイルの添付（任意・複数可）",
+                    accept_multiple_files=True,
+                    help="依頼後に追加したい指示書、画像、PDF、ZIPなどを添付できます。"
+                )
+                submit_post = st.form_submit_button("コメント・ファイルを送信", type="primary", disabled=is_busy())
 
             if submit_post:
-                if not post_content.strip():
-                    st.error("コメント内容を入力してください。")
+                if not post_content.strip() and not uploaded_files:
+                    st.error("コメントを入力するか、参考ファイルを添付してください。")
                 else:
+                    att_payload = []
+                    if uploaded_files:
+                        for uf in uploaded_files:
+                            att_payload.append({
+                                "name": uf.name,
+                                "bytes": uf.getvalue(),
+                                "type": uf.type
+                            })
                     set_pending_action(
                         "add_post",
-                        "💬 コメントを送信しています…",
-                        payload={"content": post_content.strip()}
+                        "💬 連絡内容とファイルを送信しています…",
+                        payload={
+                            "content": post_content.strip(),
+                            "attachments": att_payload
+                        }
                     )
 
     # TAB 4: 納品物・評価
@@ -605,7 +662,7 @@ def render_project_detail(current_user: dict, project_id: int):
             elif act == "request_revision":
                 execute_request_revision(project_id, current_user["id"], payload["comment"])
             elif act == "add_post":
-                execute_add_post(project_id, current_user, payload["content"])
+                execute_add_post(project_id, current_user, payload["content"], payload.get("attachments", []))
             elif act == "submit_eval":
                 execute_submit_evaluation(project_id, current_user["id"], payload["q"], payload["c"], payload["m"], payload["comment"])
 
@@ -1237,15 +1294,35 @@ def execute_request_revision(project_id, user_id, comment):
         clear_pending_action()
         st.error(f"修正依頼エラー: {e}")
 
-def execute_add_post(project_id, user, content):
+def execute_add_post(project_id, user, content, attachments=None):
+    attachments = attachments or []
     op_id = st.session_state.get("post_idempotency_key", str(uuid.uuid4()))
     check = check_idempotency_status("project_posts", op_id)
     if check["status"] == "saved":
+        saved_post_id = check["data"]["id"]
+        # 添付ファイルのアップロードが一部未完了だった場合の安全な補完
+        if attachments:
+            try:
+                with get_db_cursor(commit=True) as cur:
+                    cur.execute("SELECT original_name FROM post_attachments WHERE post_id = %s", (saved_post_id,))
+                    existing_att_names = {r[0] for r in cur.fetchall()}
+                    for att in attachments:
+                        if att["name"] not in existing_att_names:
+                            file_bytes = att["bytes"]
+                            storage_path = upload_attachment_file(user, project_id, file_bytes, att["name"], "posts", cur=cur)
+                            cur.execute("""
+                                INSERT INTO post_attachments (post_id, original_name, stored_name, storage_path, file_size, mime_type)
+                                VALUES (%s, %s, %s, %s, %s, %s)
+                            """, (saved_post_id, att["name"], storage_path.split("/")[-1], storage_path, len(file_bytes), att.get("type", "application/octet-stream")))
+            except Exception as att_err:
+                st.warning(f"コメントは保存されていますが、一部添付ファイルの保存に失敗しました: {att_err}")
+
         clear_pending_action()
-        set_flash_message("info", "コメントは既に正常に保存されています。")
+        set_flash_message("info", "コメント・参考ファイルは既に正常に保存されています。")
         st.session_state.post_idempotency_key = str(uuid.uuid4())
         st.rerun()
         return
+
     if check["status"] == "error":
         clear_pending_action()
         st.error(f"コメントの保存状態確認に失敗しました: {check['error']}")
@@ -1253,7 +1330,7 @@ def execute_add_post(project_id, user, content):
 
     try:
         with get_db_cursor(commit=True) as cur:
-            cur.execute("SELECT status FROM projects WHERE id = %s", (project_id,))
+            cur.execute("SELECT title, status, requester_id FROM projects WHERE id = %s", (project_id,))
             p_chk = cur.fetchone()
             if not p_chk or p_chk["status"] == "cancelled":
                 clear_pending_action()
@@ -1265,21 +1342,52 @@ def execute_add_post(project_id, user, content):
                 st.error("この案件へのコメント投稿権限がありません。")
                 return
 
-            cur.execute("""
-                INSERT INTO project_posts (project_id, post_type, content, created_by, idempotency_key)
-                VALUES (%s, 'comment', %s, %s, %s)
-            """, (project_id, content, user["id"], op_id))
+            action_label = "参考資料共有" if attachments else None
+            # content は空文字列を許可（NOT NULL 制約対応）
+            clean_content = content.strip() if content else ""
 
+            cur.execute("""
+                INSERT INTO project_posts (project_id, post_type, content, action_label, created_by, idempotency_key)
+                VALUES (%s, 'comment', %s, %s, %s, %s)
+                RETURNING id;
+            """, (project_id, clean_content, action_label, user["id"], op_id))
+            new_post_id = cur.fetchone()[0]
+
+            # 添付ファイルを Storage と post_attachments に保存
+            if attachments:
+                for att in attachments:
+                    file_bytes = att["bytes"]
+                    storage_path = upload_attachment_file(user, project_id, file_bytes, att["name"], "posts", cur=cur)
+                    cur.execute("""
+                        INSERT INTO post_attachments (post_id, original_name, stored_name, storage_path, file_size, mime_type)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                    """, (new_post_id, att["name"], storage_path.split("/")[-1], storage_path, len(file_bytes), att.get("type", "application/octet-stream")))
+
+            # 相手ユーザーの特定
             if user["role"] == "admin":
-                cur.execute("SELECT requester_id FROM projects WHERE id = %s", (project_id,))
-                target_user = cur.fetchone()[0]
+                target_user = p_chk["requester_id"]
             else:
-                target_user = 1
-            cur.execute("INSERT INTO notifications (user_id, project_id, title, message) VALUES (%s, %s, '新しい連絡があります', %s)", (target_user, project_id, content[:50]))
+                target_user = 1  # 岡本（デザイナー）
+
+            # 通知タイトル・メッセージの作成
+            if clean_content and attachments:
+                notif_title = "新しい連絡と参考資料が届きました"
+                notif_msg = f"#{project_id}「{p_chk['title']}」: {clean_content[:35]}（添付{len(attachments)}件: {attachments[0]['name']}等）"
+            elif attachments:
+                notif_title = "参考資料が共有されました"
+                notif_msg = f"#{project_id}「{p_chk['title']}」: 参考資料{len(attachments)}件（{attachments[0]['name']}等）が追加されました。"
+            else:
+                notif_title = "新しい連絡があります"
+                notif_msg = f"#{project_id}「{p_chk['title']}」: {clean_content[:50]}"
+
+            cur.execute("""
+                INSERT INTO notifications (user_id, project_id, title, message)
+                VALUES (%s, %s, %s, %s)
+            """, (target_user, project_id, notif_title, notif_msg))
 
         st.session_state.post_idempotency_key = str(uuid.uuid4())
         clear_pending_action()
-        set_flash_message("success", "コメントを投稿しました。")
+        set_flash_message("success", "連絡内容・参考ファイルを送信しました。")
         st.rerun()
     except Exception as e:
         clear_pending_action()
